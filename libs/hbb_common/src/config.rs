@@ -43,6 +43,7 @@ lazy_static::lazy_static! {
     static ref CONFIG: Arc<RwLock<Config>> = Arc::new(RwLock::new(Config::load()));
     static ref CONFIG2: Arc<RwLock<Config2>> = Arc::new(RwLock::new(Config2::load()));
     static ref LOCAL_CONFIG: Arc<RwLock<LocalConfig>> = Arc::new(RwLock::new(LocalConfig::load()));
+    pub static ref CONFIG_OIDC: Arc<RwLock<ConfigOidc>> = Arc::new(RwLock::new(ConfigOidc::load()));
     pub static ref ONLINE: Arc<Mutex<HashMap<String, i64>>> = Default::default();
     pub static ref PROD_RENDEZVOUS_SERVER: Arc<RwLock<String>> = Arc::new(RwLock::new(match option_env!("RENDEZVOUS_SERVER") {
         Some(key) if !key.is_empty() => key,
@@ -63,11 +64,15 @@ lazy_static::lazy_static! {
     pub static ref APP_HOME_DIR: Arc<RwLock<String>> = Default::default();
 }
 
-// #[cfg(any(target_os = "android", target_os = "ios"))]
+pub const LINK_DOCS_HOME: &str = "https://rustdesk.com/docs/en/";
+pub const LINK_DOCS_X11_REQUIRED: &str = "https://rustdesk.com/docs/en/manual/linux/#x11-required";
+pub const LINK_HEADLESS_LINUX_SUPPORT: &str =
+    "https://github.com/rustdesk/rustdesk/wiki/Headless-Linux-Support";
 lazy_static::lazy_static! {
     pub static ref HELPER_URL: HashMap<&'static str, &'static str> = HashMap::from([
-        ("rustdesk docs home", "https://rustdesk.com/docs/en/"),
-        ("rustdesk docs x11-required", "https://rustdesk.com/docs/en/manual/linux/#x11-required"),
+        ("rustdesk docs home", LINK_DOCS_HOME),
+        ("rustdesk docs x11-required", LINK_DOCS_X11_REQUIRED),
+        ("rustdesk x11 headless", LINK_HEADLESS_LINUX_SUPPORT),
         ]);
 }
 
@@ -234,10 +239,12 @@ pub struct PeerConfig {
     pub show_quality_monitor: ShowQualityMonitor,
     #[serde(default)]
     pub keyboard_mode: String,
+    #[serde(flatten)]
+    pub view_only: ViewOnly,
 
     // The other scalar value must before this
     #[serde(default, deserialize_with = "PeerConfig::deserialize_options")]
-    pub options: HashMap<String, String>,
+    pub options: HashMap<String, String>, // not use delete to represent default values
     // Various data for flutter ui
     #[serde(default)]
     pub ui_flutter: HashMap<String, String>,
@@ -258,6 +265,35 @@ pub struct PeerInfoSerde {
 }
 
 #[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
+pub struct ConfigOidc {
+    #[serde(default)]
+    pub max_auth_count: usize,
+    #[serde(default)]
+    pub callback_url: String,
+    #[serde(default)]
+    pub providers: HashMap<String, ConfigOidcProvider>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
+pub struct ConfigOidcProvider {
+    // seconds. 0 means never expires
+    #[serde(default)]
+    pub refresh_token_expires_in: u32,
+    #[serde(default)]
+    pub client_id: String,
+    #[serde(default)]
+    pub client_secret: String,
+    #[serde(default)]
+    pub issuer: Option<String>,
+    #[serde(default)]
+    pub authorization_endpoint: Option<String>,
+    #[serde(default)]
+    pub token_endpoint: Option<String>,
+    #[serde(default)]
+    pub userinfo_endpoint: Option<String>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
 pub struct TransferSerde {
     #[serde(default)]
     pub write_jobs: Vec<String>,
@@ -265,6 +301,7 @@ pub struct TransferSerde {
     pub read_jobs: Vec<String>,
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn patch(path: PathBuf) -> PathBuf {
     if let Some(_tmp) = path.to_str() {
         #[cfg(windows)]
@@ -882,15 +919,13 @@ impl PeerConfig {
                     decrypt_vec_or_original(&config.password, PASSWORD_ENC_VERSION);
                 config.password = password;
                 store = store || store2;
-                if let Some(v) = config.options.get_mut("rdp_password") {
-                    let (password, _, store2) = decrypt_str_or_original(v, PASSWORD_ENC_VERSION);
-                    *v = password;
-                    store = store || store2;
-                }
-                if let Some(v) = config.options.get_mut("os-password") {
-                    let (password, _, store2) = decrypt_str_or_original(v, PASSWORD_ENC_VERSION);
-                    *v = password;
-                    store = store || store2;
+                for opt in ["rdp_password", "os-username", "os-password"] {
+                    if let Some(v) = config.options.get_mut(opt) {
+                        let (encrypted, _, store2) =
+                            decrypt_str_or_original(v, PASSWORD_ENC_VERSION);
+                        *v = encrypted;
+                        store = store || store2;
+                    }
                 }
                 if store {
                     config.store(id);
@@ -908,12 +943,11 @@ impl PeerConfig {
         let _lock = CONFIG.read().unwrap();
         let mut config = self.clone();
         config.password = encrypt_vec_or_original(&config.password, PASSWORD_ENC_VERSION);
-        if let Some(v) = config.options.get_mut("rdp_password") {
-            *v = encrypt_str_or_original(v, PASSWORD_ENC_VERSION)
+        for opt in ["rdp_password", "os-username", "os-password"] {
+            if let Some(v) = config.options.get_mut(opt) {
+                *v = encrypt_str_or_original(v, PASSWORD_ENC_VERSION)
+            }
         }
-        if let Some(v) = config.options.get_mut("os-password") {
-            *v = encrypt_str_or_original(v, PASSWORD_ENC_VERSION)
-        };
         if let Err(err) = store_path(Self::path(id), config) {
             log::error!("Failed to store config: {}", err);
         }
@@ -1083,6 +1117,13 @@ serde_field_bool!(
     "allow_swap_key",
     default_allow_swap_key,
     "AllowSwapKey::default_allow_swap_key"
+);
+
+serde_field_bool!(
+    ViewOnly,
+    "view_only",
+    default_view_only,
+    "ViewOnly::default_view_only"
 );
 
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
@@ -1320,7 +1361,7 @@ impl UserDefaultConfig {
             "view_style" => self.get_string(key, "original", vec!["adaptive"]),
             "scroll_style" => self.get_string(key, "scrollauto", vec!["scrollbar"]),
             "image_quality" => self.get_string(key, "balanced", vec!["best", "low", "custom"]),
-            "codec-preference" => self.get_string(key, "auto", vec!["vp9", "h264", "h265"]),
+            "codec-preference" => self.get_string(key, "auto", vec!["vp8", "vp9", "h264", "h265"]),
             "custom_image_quality" => self.get_double_string(key, 50.0, 10.0, 100.0),
             "custom-fps" => self.get_double_string(key, 30.0, 10.0, 120.0),
             _ => self
@@ -1363,6 +1404,30 @@ impl UserDefaultConfig {
             }
             None => default.to_string(),
         }
+    }
+}
+
+impl ConfigOidc {
+    fn suffix() -> &'static str {
+        "_oidc"
+    }
+
+    fn load() -> Self {
+        Config::load_::<Self>(Self::suffix())._load_env()
+    }
+
+    fn _load_env(mut self) -> Self {
+        use std::env;
+        for (k, mut v) in &mut self.providers {
+            if let Ok(client_id) = env::var(format!("OIDC-{}-CLIENT-ID", k.to_uppercase())) {
+                v.client_id = client_id;
+            }
+            if let Ok(client_secret) = env::var(format!("OIDC-{}-CLIENT-SECRET", k.to_uppercase()))
+            {
+                v.client_secret = client_secret;
+            }
+        }
+        self
     }
 }
 

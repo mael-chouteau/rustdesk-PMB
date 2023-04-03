@@ -1,3 +1,4 @@
+use crate::platform::breakdown_callback;
 use hbb_common::log;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use hbb_common::platform::register_breakdown_handler;
@@ -7,6 +8,7 @@ use hbb_common::platform::register_breakdown_handler;
 /// [Note]
 /// If it returns [`None`], then the process will terminate, and flutter gui will not be started.
 /// If it returns [`Some`], then the process will continue, and flutter gui will be started.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub fn core_main() -> Option<Vec<String>> {
     let mut args = Vec::new();
     let mut flutter_args = Vec::new();
@@ -38,7 +40,7 @@ pub fn core_main() -> Option<Vec<String>> {
         i += 1;
     }
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    register_breakdown_handler();
+    register_breakdown_handler(breakdown_callback);
     #[cfg(target_os = "linux")]
     #[cfg(feature = "flutter")]
     {
@@ -125,7 +127,7 @@ pub fn core_main() -> Option<Vec<String>> {
             } else if args[0] == "--reinstall" {
                 hbb_common::allow_err!(platform::uninstall_me(false));
                 hbb_common::allow_err!(platform::install_me(
-                    "desktopicon startmenu",
+                    "desktopicon startmenu driverCert",
                     "".to_owned(),
                     false,
                     false,
@@ -133,7 +135,7 @@ pub fn core_main() -> Option<Vec<String>> {
                 return None;
             } else if args[0] == "--silent-install" {
                 hbb_common::allow_err!(platform::install_me(
-                    "desktopicon startmenu",
+                    "desktopicon startmenu driverCert",
                     "".to_owned(),
                     true,
                     args.len() > 1,
@@ -222,6 +224,11 @@ pub fn core_main() -> Option<Vec<String>> {
             // call connection manager to establish connections
             // meanwhile, return true to call flutter window to show control panel
             crate::ui_interface::start_option_status_sync();
+        } else if args[0] == "--cm-no-ui" {
+            #[cfg(feature = "flutter")]
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            crate::flutter::connection_manager::start_cm_no_ui();
+            return None;
         }
     }
     //_async_logger_holder.map(|x| x.flush());

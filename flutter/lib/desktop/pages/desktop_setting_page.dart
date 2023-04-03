@@ -769,7 +769,7 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
               'Port',
               Row(children: [
                 SizedBox(
-                  width: 80,
+                  width: 95,
                   child: TextField(
                     controller: controller,
                     enabled: enabled && !locked,
@@ -778,13 +778,10 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
                       FilteringTextInputFormatter.allow(RegExp(
                           r'^([0-9]|[1-9]\d|[1-9]\d{2}|[1-9]\d{3}|[1-5]\d{4}|6[0-4]\d{3}|65[0-4]\d{2}|655[0-2]\d|6553[0-5])$')),
                     ],
-                    textAlign: TextAlign.end,
                     decoration: const InputDecoration(
                       hintText: '21118',
-                      border: OutlineInputBorder(),
                       contentPadding:
-                          EdgeInsets.only(bottom: 10, top: 10, right: 10),
-                      isCollapsed: true,
+                          EdgeInsets.symmetric(vertical: 12, horizontal: 12),
                     ),
                   ).marginOnly(right: 15),
                 ),
@@ -1261,9 +1258,6 @@ class _DisplayState extends State<_Display> {
   }
 
   Widget codec(BuildContext context) {
-    if (!bind.mainHasHwcodec()) {
-      return Offstage();
-    }
     final key = 'codec-preference';
     onChanged(String value) async {
       await bind.mainSetUserDefaultOption(key: key, value: value);
@@ -1271,7 +1265,28 @@ class _DisplayState extends State<_Display> {
     }
 
     final groupValue = bind.mainGetUserDefaultOption(key: key);
-
+    var hwRadios = [];
+    try {
+      final Map codecsJson = jsonDecode(bind.mainSupportedHwdecodings());
+      final h264 = codecsJson['h264'] ?? false;
+      final h265 = codecsJson['h265'] ?? false;
+      if (h264) {
+        hwRadios.add(_Radio(context,
+            value: 'h264',
+            groupValue: groupValue,
+            label: 'H264',
+            onChanged: onChanged));
+      }
+      if (h265) {
+        hwRadios.add(_Radio(context,
+            value: 'h265',
+            groupValue: groupValue,
+            label: 'H265',
+            onChanged: onChanged));
+      }
+    } catch (e) {
+      debugPrint("failed to parse supported hwdecodings, err=$e");
+    }
     return _Card(title: 'Default Codec', children: [
       _Radio(context,
           value: 'auto',
@@ -1279,20 +1294,16 @@ class _DisplayState extends State<_Display> {
           label: 'Auto',
           onChanged: onChanged),
       _Radio(context,
+          value: 'vp8',
+          groupValue: groupValue,
+          label: 'VP8',
+          onChanged: onChanged),
+      _Radio(context,
           value: 'vp9',
           groupValue: groupValue,
           label: 'VP9',
           onChanged: onChanged),
-      _Radio(context,
-          value: 'h264',
-          groupValue: groupValue,
-          label: 'H264',
-          onChanged: onChanged),
-      _Radio(context,
-          value: 'h265',
-          groupValue: groupValue,
-          label: 'H265',
-          onChanged: onChanged),
+      ...hwRadios,
     ]);
   }
 
@@ -1318,6 +1329,8 @@ class _DisplayState extends State<_Display> {
 
   Widget other(BuildContext context) {
     return _Card(title: 'Other Default Options', children: [
+      otherRow('View Mode', 'view_only'),
+      otherRow('show_monitors_tip', 'show_monitors_toolbar'),
       otherRow('Show remote cursor', 'show_remote_cursor'),
       otherRow('Zoom cursor', 'zoom-cursor'),
       otherRow('Show quality monitor', 'show_quality_monitor'),
@@ -1702,9 +1715,6 @@ _LabeledTextField(
             enabled: enabled,
             obscureText: secure,
             decoration: InputDecoration(
-                isDense: true,
-                border: OutlineInputBorder(),
-                contentPadding: EdgeInsets.fromLTRB(14, 15, 14, 15),
                 errorText: errorText.isNotEmpty ? errorText : null),
             style: TextStyle(
               color: _disabledTextColor(context, enabled),
@@ -1742,19 +1752,20 @@ class _ComboBox extends StatelessWidget {
     current = keys[index];
     return Container(
       decoration: BoxDecoration(
-          border: Border.all(
-        color: enabled
-            ? MyTheme.color(context).border2 ?? MyTheme.border
-            : MyTheme.border,
-      )),
-      height: 30,
+        border: Border.all(
+          color: enabled
+              ? MyTheme.color(context).border2 ?? MyTheme.border
+              : MyTheme.border,
+        ),
+        borderRadius:
+            BorderRadius.circular(8), //border raiuds of dropdown button
+      ),
+      height: 42, // should be the height of a TextField
       child: Obx(() => DropdownButton<String>(
             isExpanded: true,
             value: ref.value,
             elevation: 16,
-            underline: Container(
-              height: 25,
-            ),
+            underline: Container(),
             style: TextStyle(
                 color: enabled
                     ? Theme.of(context).textTheme.titleMedium?.color
@@ -1762,7 +1773,7 @@ class _ComboBox extends StatelessWidget {
             icon: const Icon(
               Icons.expand_more_sharp,
               size: 20,
-            ),
+            ).marginOnly(right: 15),
             onChanged: enabled
                 ? (String? newValue) {
                     if (newValue != null && newValue != ref.value) {
@@ -1779,11 +1790,11 @@ class _ComboBox extends StatelessWidget {
                   value,
                   style: const TextStyle(fontSize: _kContentFontSize),
                   overflow: TextOverflow.ellipsis,
-                ).marginOnly(left: 5),
+                ).marginOnly(left: 15),
               );
             }).toList(),
           )),
-    );
+    ).marginOnly(bottom: 5);
   }
 }
 
@@ -1860,7 +1871,6 @@ void changeSocks5Proxy() async {
                 Expanded(
                   child: TextField(
                     decoration: InputDecoration(
-                        border: const OutlineInputBorder(),
                         errorText: proxyMsg.isNotEmpty ? proxyMsg : null),
                     controller: proxyController,
                     autofocus: true,
@@ -1878,9 +1888,6 @@ void changeSocks5Proxy() async {
                     ).marginOnly(right: 10)),
                 Expanded(
                   child: TextField(
-                    decoration: const InputDecoration(
-                      border: OutlineInputBorder(),
-                    ),
                     controller: userController,
                   ),
                 ),
@@ -1898,7 +1905,6 @@ void changeSocks5Proxy() async {
                   child: Obx(() => TextField(
                         obscureText: obscure.value,
                         decoration: InputDecoration(
-                            border: const OutlineInputBorder(),
                             suffixIcon: IconButton(
                                 onPressed: () => obscure.value = !obscure.value,
                                 icon: Icon(obscure.value

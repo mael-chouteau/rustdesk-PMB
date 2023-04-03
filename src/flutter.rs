@@ -218,7 +218,7 @@ impl VideoRenderer {
     }
 
     pub fn on_rgba(&self, rgba: &Vec<u8>) {
-        if self.ptr == usize::default() {
+        if self.ptr == usize::default() || self.width == 0 || self.height == 0 {
             return;
         }
         if let Some(func) = &self.on_rgba_func {
@@ -420,7 +420,14 @@ impl InvokeUiSession for FlutterHandler {
     // unused in flutter // TEST flutter
     fn confirm_delete_files(&self, _id: i32, _i: i32, _name: String) {}
 
-    fn override_file_confirm(&self, id: i32, file_num: i32, to: String, is_upload: bool) {
+    fn override_file_confirm(
+        &self,
+        id: i32,
+        file_num: i32,
+        to: String,
+        is_upload: bool,
+        is_identical: bool,
+    ) {
         self.push_event(
             "override_file_confirm",
             vec![
@@ -428,6 +435,7 @@ impl InvokeUiSession for FlutterHandler {
                 ("file_num", &file_num.to_string()),
                 ("read_path", &to),
                 ("is_upload", &is_upload.to_string()),
+                ("is_identical", &is_identical.to_string()),
             ],
         );
     }
@@ -501,6 +509,7 @@ impl InvokeUiSession for FlutterHandler {
                 ("features", &features),
                 ("current_display", &pi.current_display.to_string()),
                 ("resolutions", &resolutions),
+                ("platform_additions", &pi.platform_additions),
             ],
         );
     }
@@ -631,12 +640,14 @@ pub fn session_add(
     is_port_forward: bool,
     switch_uuid: &str,
     force_relay: bool,
+    password: String,
 ) -> ResultType<()> {
     let session_id = get_session_id(id.to_owned());
     LocalConfig::set_remote_id(&session_id);
 
     let session: Session<FlutterHandler> = Session {
         id: session_id.clone(),
+        password,
         server_keyboard_enabled: Arc::new(RwLock::new(true)),
         server_file_transfer_enabled: Arc::new(RwLock::new(true)),
         server_clipboard_enabled: Arc::new(RwLock::new(true)),
@@ -804,8 +815,20 @@ pub mod connection_manager {
         }
     }
 
+    #[inline]
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    pub fn start_cm_no_ui() {
+        start_listen_ipc(false);
+    }
+
+    #[inline]
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     pub fn start_listen_ipc_thread() {
+        start_listen_ipc(true);
+    }
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    fn start_listen_ipc(new_thread: bool) {
         use crate::ui_cm_interface::{start_ipc, ConnectionManager};
 
         #[cfg(target_os = "linux")]
@@ -814,7 +837,11 @@ pub mod connection_manager {
         let cm = ConnectionManager {
             ui_handler: FlutterHandler {},
         };
-        std::thread::spawn(move || start_ipc(cm));
+        if new_thread {
+            std::thread::spawn(move || start_ipc(cm));
+        } else {
+            start_ipc(cm);
+        }
     }
 
     #[cfg(target_os = "android")]

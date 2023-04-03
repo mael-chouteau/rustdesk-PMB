@@ -87,6 +87,7 @@ pub fn session_add_sync(
     is_port_forward: bool,
     switch_uuid: String,
     force_relay: bool,
+    password: String,
 ) -> SyncReturn<String> {
     if let Err(e) = session_add(
         &id,
@@ -94,6 +95,7 @@ pub fn session_add_sync(
         is_port_forward,
         &switch_uuid,
         force_relay,
+        password,
     ) {
         SyncReturn(format!("Failed to add session with id {}, {}", &id, e))
     } else {
@@ -134,9 +136,15 @@ pub fn session_get_option(id: String, arg: String) -> Option<String> {
     }
 }
 
-pub fn session_login(id: String, password: String, remember: bool) {
+pub fn session_login(
+    id: String,
+    os_username: String,
+    os_password: String,
+    password: String,
+    remember: bool,
+) {
     if let Some(session) = SESSIONS.read().unwrap().get(&id) {
-        session.login(password, remember);
+        session.login(os_username, os_password, password, remember);
     }
 }
 
@@ -166,14 +174,12 @@ pub fn session_reconnect(id: String, force_relay: bool) {
 }
 
 pub fn session_toggle_option(id: String, value: String) {
-    let mut is_found = false;
     if let Some(session) = SESSIONS.write().unwrap().get_mut(&id) {
-        is_found = true;
         log::warn!("toggle option {}", &value);
         session.toggle_option(value.clone());
     }
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    if is_found && value == "disable-clipboard" {
+    if SESSIONS.read().unwrap().get(&id).is_some() && value == "disable-clipboard" {
         crate::flutter::update_text_clipboard_required();
     }
 }
@@ -336,10 +342,10 @@ pub fn session_handle_flutter_key_event(
     }
 }
 
-pub fn session_enter_or_leave(id: String, enter: bool) {
+pub fn session_enter_or_leave(_id: String, _enter: bool) {
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    if let Some(session) = SESSIONS.read().unwrap().get(&id) {
-        if enter {
+    if let Some(session) = SESSIONS.read().unwrap().get(&_id) {
+        if _enter {
             session.enter();
         } else {
             session.leave();
@@ -969,6 +975,13 @@ pub fn main_has_hwcodec() -> SyncReturn<bool> {
     SyncReturn(has_hwcodec())
 }
 
+pub fn main_supported_hwdecodings() -> SyncReturn<String> {
+    let decoding = supported_hwdecodings();
+    let msg = HashMap::from([("h264", decoding.0), ("h265", decoding.1)]);
+
+    SyncReturn(serde_json::ser::to_string(&msg).unwrap_or("".to_owned()))
+}
+
 pub fn main_is_root() -> bool {
     is_root()
 }
@@ -1054,10 +1067,10 @@ pub fn session_send_note(id: String, note: String) {
     }
 }
 
-pub fn session_supported_hwcodec(id: String) -> String {
+pub fn session_alternative_codecs(id: String) -> String {
     if let Some(session) = SESSIONS.read().unwrap().get(&id) {
-        let (h264, h265) = session.supported_hwcodec();
-        let msg = HashMap::from([("h264", h264), ("h265", h265)]);
+        let (vp8, h264, h265) = session.alternative_codecs();
+        let msg = HashMap::from([("vp8", vp8), ("h264", h264), ("h265", h265)]);
         serde_json::ser::to_string(&msg).unwrap_or("".to_owned())
     } else {
         String::new()
@@ -1403,7 +1416,7 @@ pub mod server_side {
 
     #[no_mangle]
     pub unsafe extern "system" fn Java_com_carriez_flutter_1hbb_MainService_startService(
-        env: JNIEnv,
+        _env: JNIEnv,
         _class: JClass,
     ) {
         log::debug!("startService from jvm");

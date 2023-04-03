@@ -755,7 +755,7 @@ lazy_static::lazy_static! {
 
 #[cfg(target_os = "linux")]
 lazy_static::lazy_static! {
-    pub static ref IS_X11: bool = "x11" == hbb_common::platform::linux::get_display_server();
+    pub static ref IS_X11: bool = hbb_common::platform::linux::is_x11_or_headless();
 }
 
 pub fn make_fd_to_json(id: i32, path: String, entries: &Vec<FileEntry>) -> String {
@@ -798,4 +798,23 @@ pub fn encode64<T: AsRef<[u8]>>(input: T) -> String {
 pub fn decode64<T: AsRef<[u8]>>(input: T) -> Result<Vec<u8>, base64::DecodeError> {
     #[allow(deprecated)]
     base64::decode(input)
+}
+
+pub async fn get_key(sync: bool) -> String {
+    let mut key = if sync {
+        Config::get_option("key")
+    } else {
+        let mut options = crate::ipc::get_options_async().await;
+        options.remove("key").unwrap_or_default()
+    };
+    if key.is_empty() {
+        #[cfg(windows)]
+        if let Some(lic) = crate::platform::windows::get_license() {
+            return lic.key;
+        }
+    }
+    if key.is_empty() && !option_env!("RENDEZVOUS_SERVER").unwrap_or("").is_empty() {
+        key = config::RS_PUB_KEY.to_owned();
+    }
+    key
 }

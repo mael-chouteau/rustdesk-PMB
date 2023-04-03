@@ -10,10 +10,10 @@ use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use rdev::{Event, EventType::*};
+use rdev::{Event, EventType::*, KeyCode};
 use uuid::Uuid;
 
-use hbb_common::config::{Config, LocalConfig, PeerConfig, RS_PUB_KEY};
+use hbb_common::config::{Config, LocalConfig, PeerConfig};
 use hbb_common::rendezvous_proto::ConnType;
 use hbb_common::tokio::{self, sync::mpsc};
 use hbb_common::{allow_err, message_proto::*};
@@ -216,24 +216,16 @@ impl<T: InvokeUiSession> Session<T> {
         true
     }
 
-    pub fn supported_hwcodec(&self) -> (bool, bool) {
-        #[cfg(any(feature = "hwcodec", feature = "mediacodec"))]
-        {
-            let decoder = scrap::codec::Decoder::video_codec_state(&self.id);
-            let mut h264 = decoder.score_h264 > 0;
-            let mut h265 = decoder.score_h265 > 0;
-            let (encoding_264, encoding_265) = self
-                .lc
-                .read()
-                .unwrap()
-                .supported_encoding
-                .unwrap_or_default();
-            h264 = h264 && encoding_264;
-            h265 = h265 && encoding_265;
-            return (h264, h265);
-        }
-        #[allow(unreachable_code)]
-        (false, false)
+    pub fn alternative_codecs(&self) -> (bool, bool, bool) {
+        let decoder = scrap::codec::Decoder::supported_decodings(None);
+        let mut vp8 = decoder.ability_vp8 > 0;
+        let mut h264 = decoder.ability_h264 > 0;
+        let mut h265 = decoder.ability_h265 > 0;
+        let enc = &self.lc.read().unwrap().supported_encoding;
+        vp8 = vp8 && enc.vp8;
+        h264 = h264 && enc.h264;
+        h265 = h265 && enc.h265;
+        (vp8, h264, h265)
     }
 
     pub fn change_prefer_codec(&self) {
@@ -374,7 +366,6 @@ impl<T: InvokeUiSession> Session<T> {
     }
 
     pub fn swab_modifier_key(&self, msg: &mut KeyEvent) {
-
         let allow_swap_key = self.get_toggle_option("allow_swap_key".to_string());
         if allow_swap_key {
             if let Some(key_event::Union::ControlKey(ck)) = msg.union {
@@ -388,19 +379,22 @@ impl<T: InvokeUiSession> Session<T> {
                 };
                 msg.set_control_key(ck);
             }
-            msg.modifiers = msg.modifiers.iter().map(|ck| {
-                let ck = ck.enum_value_or_default();
-                let ck = match ck {
-                    ControlKey::Control => ControlKey::Meta,
-                    ControlKey::Meta => ControlKey::Control,
-                    ControlKey::RControl => ControlKey::Meta,
-                    ControlKey::RWin => ControlKey::Control,
-                    _ => ck,
-                };
-                hbb_common::protobuf::EnumOrUnknown::new(ck)
-            }).collect();
-            
-        
+            msg.modifiers = msg
+                .modifiers
+                .iter()
+                .map(|ck| {
+                    let ck = ck.enum_value_or_default();
+                    let ck = match ck {
+                        ControlKey::Control => ControlKey::Meta,
+                        ControlKey::Meta => ControlKey::Control,
+                        ControlKey::RControl => ControlKey::Meta,
+                        ControlKey::RWin => ControlKey::Control,
+                        _ => ck,
+                    };
+                    hbb_common::protobuf::EnumOrUnknown::new(ck)
+                })
+                .collect();
+
             let code = msg.chr();
             if code != 0 {
                 let mut peer = self.peer_platform().to_lowercase();
@@ -419,7 +413,7 @@ impl<T: InvokeUiSession> Session<T> {
                         rdev::win_scancode_from_key(key).unwrap_or_default()
                     }
                     "macos" => {
-                        let key = rdev::macos_key_from_code(code);
+                        let key = rdev::macos_key_from_code(code as _);
                         let key = match key {
                             rdev::Key::ControlLeft => rdev::Key::MetaLeft,
                             rdev::Key::MetaLeft => rdev::Key::ControlLeft,
@@ -427,7 +421,7 @@ impl<T: InvokeUiSession> Session<T> {
                             rdev::Key::MetaRight => rdev::Key::ControlLeft,
                             _ => key,
                         };
-                        rdev::macos_keycode_from_key(key).unwrap_or_default()
+                        rdev::macos_keycode_from_key(key).unwrap_or_default() as _
                     }
                     _ => {
                         let key = rdev::linux_key_from_code(code);
@@ -444,7 +438,6 @@ impl<T: InvokeUiSession> Session<T> {
                 msg.set_chr(key);
             }
         }
-
     }
 
     pub fn send_key_event(&self, evt: &KeyEvent) {
@@ -544,8 +537,8 @@ impl<T: InvokeUiSession> Session<T> {
         if scancode < 0 || keycode < 0 {
             return;
         }
-        let keycode: u32 = keycode as u32;
-        let scancode: u32 = scancode as u32;
+        let keycode: KeyCode = keycode as _;
+        let scancode: u32 = scancode as _;
 
         #[cfg(not(target_os = "windows"))]
         let key = rdev::key_from_code(keycode) as rdev::Key;
@@ -561,8 +554,8 @@ impl<T: InvokeUiSession> Session<T> {
         let event = Event {
             time: SystemTime::now(),
             unicode: None,
-            code: keycode as _,
-            scan_code: scancode as _,
+            platform_code: keycode as _,
+            position_code: scancode as _,
             event_type: event_type,
         };
         keyboard::client::process_event(&event, Some(lock_modes));
@@ -710,8 +703,14 @@ impl<T: InvokeUiSession> Session<T> {
         fs::get_string(&path)
     }
 
-    pub fn login(&self, password: String, remember: bool) {
-        self.send(Data::Login((password, remember)));
+    pub fn login(
+        &self,
+        os_username: String,
+        os_password: String,
+        password: String,
+        remember: bool,
+    ) {
+        self.send(Data::Login((os_username, os_password, password, remember)));
     }
 
     pub fn new_rdp(&self) {
@@ -872,7 +871,14 @@ pub trait InvokeUiSession: Send + Sync + Clone + 'static + Sized + Default {
         only_count: bool,
     );
     fn confirm_delete_files(&self, id: i32, i: i32, name: String);
-    fn override_file_confirm(&self, id: i32, file_num: i32, to: String, is_upload: bool);
+    fn override_file_confirm(
+        &self,
+        id: i32,
+        file_num: i32,
+        to: String,
+        is_upload: bool,
+        is_identical: bool,
+    );
     fn update_block_input_state(&self, on: bool);
     fn job_progress(&self, id: i32, file_num: i32, speed: f64, finished_size: f64);
     fn adapt_size(&self);
@@ -997,8 +1003,23 @@ impl<T: InvokeUiSession> Interface for Session<T> {
         handle_hash(self.lc.clone(), pass, hash, self, peer).await;
     }
 
-    async fn handle_login_from_ui(&mut self, password: String, remember: bool, peer: &mut Stream) {
-        handle_login_from_ui(self.lc.clone(), password, remember, peer).await;
+    async fn handle_login_from_ui(
+        &mut self,
+        os_username: String,
+        os_password: String,
+        password: String,
+        remember: bool,
+        peer: &mut Stream,
+    ) {
+        handle_login_from_ui(
+            self.lc.clone(),
+            os_username,
+            os_password,
+            password,
+            remember,
+            peer,
+        )
+        .await;
     }
 
     async fn handle_test_delay(&mut self, t: TestDelay, peer: &mut Stream) {
@@ -1011,21 +1032,25 @@ impl<T: InvokeUiSession> Interface for Session<T> {
             handle_test_delay(t, peer).await;
         }
     }
-    
-    fn swap_modifier_mouse(&self, msg : &mut hbb_common::protos::message::MouseEvent) {
+
+    fn swap_modifier_mouse(&self, msg: &mut hbb_common::protos::message::MouseEvent) {
         let allow_swap_key = self.get_toggle_option("allow_swap_key".to_string());
-        if allow_swap_key  {
-            msg.modifiers = msg.modifiers.iter().map(|ck| {
-                let ck = ck.enum_value_or_default();
-                let ck = match ck {
-                    ControlKey::Control => ControlKey::Meta,
-                    ControlKey::Meta => ControlKey::Control,
-                    ControlKey::RControl => ControlKey::Meta,
-                    ControlKey::RWin => ControlKey::Control,
-                    _ => ck,
-                };
-                hbb_common::protobuf::EnumOrUnknown::new(ck)
-            }).collect();
+        if allow_swap_key {
+            msg.modifiers = msg
+                .modifiers
+                .iter()
+                .map(|ck| {
+                    let ck = ck.enum_value_or_default();
+                    let ck = match ck {
+                        ControlKey::Control => ControlKey::Meta,
+                        ControlKey::Meta => ControlKey::Control,
+                        ControlKey::RControl => ControlKey::Meta,
+                        ControlKey::RWin => ControlKey::Control,
+                        _ => ck,
+                    };
+                    hbb_common::protobuf::EnumOrUnknown::new(ck)
+                })
+                .collect();
         };
     }
 }
@@ -1041,17 +1066,13 @@ impl<T: InvokeUiSession> Session<T> {
 
 #[tokio::main(flavor = "current_thread")]
 pub async fn io_loop<T: InvokeUiSession>(handler: Session<T>) {
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    let (sender, receiver) = mpsc::unbounded_channel::<Data>();
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     let (sender, mut receiver) = mpsc::unbounded_channel::<Data>();
     *handler.sender.write().unwrap() = Some(sender.clone());
-    let mut options = crate::ipc::get_options_async().await;
-    let mut key = options.remove("key").unwrap_or("".to_owned());
     let token = LocalConfig::get_option("access_token");
-    if key.is_empty() {
-        key = crate::platform::get_license_key();
-    }
-    if key.is_empty() && !option_env!("RENDEZVOUS_SERVER").unwrap_or("").is_empty() {
-        key = RS_PUB_KEY.to_owned();
-    }
+    let key = crate::get_key(false).await;
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     if handler.is_port_forward() {
         if handler.is_rdp() {
@@ -1141,13 +1162,15 @@ pub async fn io_loop<T: InvokeUiSession>(handler: Session<T>) {
     let frame_count = Arc::new(AtomicUsize::new(0));
     let frame_count_cl = frame_count.clone();
     let ui_handler = handler.ui_handler.clone();
-    let (video_sender, audio_sender) = start_video_audio_threads(move |data: &mut Vec<u8>| {
-        frame_count_cl.fetch_add(1, Ordering::Relaxed);
-        ui_handler.on_rgba(data);
-    });
+    let (video_sender, audio_sender, video_queue) =
+        start_video_audio_threads(move |data: &mut Vec<u8>| {
+            frame_count_cl.fetch_add(1, Ordering::Relaxed);
+            ui_handler.on_rgba(data);
+        });
 
     let mut remote = Remote::new(
         handler,
+        video_queue,
         video_sender,
         audio_sender,
         receiver,
